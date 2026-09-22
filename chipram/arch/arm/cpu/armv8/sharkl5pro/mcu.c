@@ -651,7 +651,14 @@ void enable_auto_gate_for_lp(void)
 	spl_ana_clk_config(300000);
 }
 
-#ifdef CONFIG_SPL_VIBRATE_MARKERS
+/*
+ * Haptic feedback via the sc2730 vibrator motor.
+ *
+ * Progress markers (CONFIG_SPL_VIBRATE_MARKERS) and the boot pulse
+ * (CONFIG_SPL_BOOT_VIBRATE) share one primitive, spl_vibrate(), so the
+ * motor path is compiled whenever either wants it.
+ */
+#if defined(CONFIG_SPL_VIBRATE_MARKERS) || defined(CONFIG_SPL_BOOT_VIBRATE)
 /*
  * Progress markers via the sc2730 vibrator motor.
  *
@@ -668,19 +675,26 @@ void enable_auto_gate_for_lp(void)
  */
 #define SPL_VIBR_CTRL0  (0x32120000 + 0x1800 + 0x390)
 
+/* One pulse of the motor. Uses the hardware timer (udelay) so the timing is
+ * clock independent; keep it short enough not to trip the watchdog. */
+void spl_vibrate(unsigned int on_ms)
+{
+	sci_adi_write(SPL_VIBR_CTRL0, 0xB4, 0xFF);                 /* LDO voltage */
+	sci_adi_write(SPL_VIBR_CTRL0, 0, (1u << 13) | (1u << 14)); /* clear PD -> ON */
+	udelay(on_ms * 1000u);
+	sci_adi_write(SPL_VIBR_CTRL0, (1u << 13) | (1u << 14),
+		      (1u << 13) | (1u << 14));                    /* PD -> OFF */
+}
+#endif
+
+#ifdef CONFIG_SPL_VIBRATE_MARKERS
 void spl_buzz(int count)
 {
 	int k;
 
-	/* Use the hardware timer (udelay) so pulse timing is clock independent and
-	 * short enough not to trip the watchdog. */
 	for (k = 0; k < count; k++) {
-		sci_adi_write(SPL_VIBR_CTRL0, 0xB4, 0xFF);                 /* LDO voltage */
-		sci_adi_write(SPL_VIBR_CTRL0, 0, (1u << 13) | (1u << 14)); /* clear PD -> ON */
-		udelay(200000);   /* 200 ms on */
-		sci_adi_write(SPL_VIBR_CTRL0, (1u << 13) | (1u << 14),
-			      (1u << 13) | (1u << 14));                    /* PD -> OFF */
-		udelay(400000);   /* 400 ms off */
+		spl_vibrate(200);  /* 200 ms on */
+		udelay(400000);    /* 400 ms off */
 	}
 	udelay(1200000);   /* ~1.2 s gap so pulse groups are countable */
 }

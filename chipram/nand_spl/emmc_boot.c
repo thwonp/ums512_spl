@@ -15,6 +15,8 @@
 #include <security/sec_common.h>
 #ifdef CONFIG_SPL_VIBRATE_MARKERS
 extern void spl_buzz(int count);   /* haptic progress marker, defined in mcu.c */
+extern void spl_vibrate(unsigned int on_ms); /* one motor pulse, defined in mcu.c */
+extern void udelay(uint32 us);     /* timer.h never declares it: its include guard is #ifdef */
 #endif
 #include <security/trustzone/trustzone.h>
 #include <security/sprd_ce_ctrl.h>
@@ -644,6 +646,100 @@ static const char *spl_other_suffix(void)
  * Try to load u-boot from a raw SD-card image instead of the eMMC uboot_<slot>
  * partition. Validity confirmed by header magic before the jump.
  */
+#ifdef CONFIG_SD_BOOT_SKIP_KEYS
+/*
+ * Hold TL + TR at power-on to skip the SD card and boot from eMMC, i.e. the
+ * stock system, without having to pull the card.
+ *
+ * The buttons are plain active-low GPIOs on the AON GPIO block. Their pads
+ * are only muxed to GPIO by u-boot and the kernel, which run after us, so
+ * do it here the way u-boot's gpio_pin_set() does: function 3, input
+ * enable, 20K pull-up. Addresses and offsets come from u-boot's
+ * board/spreadtrum/ums512_1h10/gpio_pin.c and arch-sharkl5pro/pinmap.h,
+ * the GPIO register layout from the kernel's gpio-sprd.c.
+ *
+ * SELECT is read as a guard and has to read released. If the pads or the
+ * GPIO block are not actually working every line reads 0, which on
+ * active-low buttons is "everything pressed" - and that would skip the
+ * card on every boot with nothing to say why. Requiring one released line
+ * turns that failure into the normal SD boot instead.
+ */
+#define SKIP_PIN_CTRL_BASE	0x32450000u	/* SPRD_PIN_PHYS; SD pads use it too */
+#define SKIP_PIN_MISC_OFF	0x400u
+#define SKIP_PIN_FUNC_MASK	0x30u		/* bits[5:4] */
+#define SKIP_PIN_FUNC_GPIO	0x30u		/* function 3 */
+#define SKIP_PIN_IE_OE_MASK	0x03u		/* bits[1:0]: 0 Z, 1 OE, 2 IE */
+#define SKIP_PIN_IE		0x02u
+#define SKIP_PIN_PULL_MASK	0x10ccu		/* WPUS WPU WPD SLP_WPU SLP_WPD */
+#define SKIP_PIN_WPU_20K	0x0088u		/* WPU | SLP_WPU */
+
+#define SKIP_GPIO_BASE		SPRD_AON_GPIO_PHYS	/* ap_gpio in the DT */
+#define SKIP_GPIO_BANK_SIZE	0x80u
+#define SKIP_GPIO_DATA		0x00u
+#define SKIP_GPIO_DMSK		0x04u
+#define SKIP_GPIO_DIR		0x08u
+#define SKIP_GPIO_INEN		0x28u
+
+struct skip_key {
+	uint32 gpio;
+	uint32 pin_off;
+};
+
+static const struct skip_key skip_key_tl  = { 14, 0x184 };	/* RFSEN1   */
+static const struct skip_key skip_key_tr  = {  1, 0x174 };	/* RFSDA0   */
+static const struct skip_key skip_key_sel = { 55, 0x260 };	/* SPI2_CLK */
+
+static uint32 skip_key_bank(const struct skip_key *k)
+{
+	return SKIP_GPIO_BASE + (k->gpio / 16u) * SKIP_GPIO_BANK_SIZE;
+}
+
+static void skip_key_setup(const struct skip_key *k)
+{
+	uint32 bank = skip_key_bank(k);
+	uint32 bit = 1u << (k->gpio % 16u);
+	uint32 v;
+
+	v = REG32(SKIP_PIN_CTRL_BASE + k->pin_off);
+	v = (v & ~SKIP_PIN_FUNC_MASK) | SKIP_PIN_FUNC_GPIO;
+	REG32(SKIP_PIN_CTRL_BASE + k->pin_off) = v;
+
+	v = REG32(SKIP_PIN_CTRL_BASE + SKIP_PIN_MISC_OFF + k->pin_off);
+	v &= ~(SKIP_PIN_IE_OE_MASK | SKIP_PIN_PULL_MASK);
+	v |= SKIP_PIN_IE | SKIP_PIN_WPU_20K;
+	REG32(SKIP_PIN_CTRL_BASE + SKIP_PIN_MISC_OFF + k->pin_off) = v;
+
+	REG32(bank + SKIP_GPIO_DMSK) |= bit;
+	REG32(bank + SKIP_GPIO_DIR)  &= ~bit;
+	REG32(bank + SKIP_GPIO_INEN) |= bit;
+}
+
+static int skip_key_level(const struct skip_key *k)
+{
+	return !!(REG32(skip_key_bank(k) + SKIP_GPIO_DATA) & (1u << (k->gpio % 16u)));
+}
+
+static BOOLEAN spl_sd_skip_requested(void)
+{
+	int i, tl = 0, tr = 0, sel = 0;
+
+	skip_key_setup(&skip_key_tl);
+	skip_key_setup(&skip_key_tr);
+	skip_key_setup(&skip_key_sel);
+	udelay(2000);	/* let the pull-ups settle after the mux */
+
+	/* eight samples 1 ms apart, all of which have to agree */
+	for (i = 0; i < 8; i++) {
+		tl  += skip_key_level(&skip_key_tl);
+		tr  += skip_key_level(&skip_key_tr);
+		sel += skip_key_level(&skip_key_sel);
+		udelay(1000);
+	}
+
+	return (tl == 0 && tr == 0 && sel == 8) ? TRUE : FALSE;
+}
+#endif /* CONFIG_SD_BOOT_SKIP_KEYS */
+
 static BOOLEAN spl_load_uboot_from_sd(void)
 {
 	sys_img_header *hdr = (sys_img_header *)(CONFIG_SYS_NAND_U_BOOT_DST - KEY_INFO_SIZ);
@@ -762,6 +858,27 @@ void nand_boot(void)
 		 * u-boot from SD (the "hybrid" case): the stock u-boot needs SML set up on
 		 * every boot (PSCI / warm-reboot state), so a raw jump to it only survives
 		 * a fresh flash and hangs after a reboot. */
+#ifdef CONFIG_SPL_BOOT_VIBRATE
+		/* Boot pulse: DDR and the secure world are up by now, so the ADI /
+		 * regulator bus is in a known-good state (unlike Chip_Init, before
+		 * soc_voltage_init, where an early pulse wedged DDR init). This is the
+		 * first physical sign the power button was taken - the panel stays
+		 * dark until the kernel drives it. */
+		spl_vibrate(60);
+#endif
+#ifdef CONFIG_SD_BOOT_SKIP_KEYS
+		if (TRUE == spl_sd_skip_requested()) {
+			/* No console is linked into the SPL on this board; the two
+			 * pulses below are the only feedback that the skip was taken. */
+#ifdef CONFIG_SPL_BOOT_VIBRATE
+			/* two quick pulses: the keys were seen, going to eMMC */
+			udelay(150000);
+			spl_vibrate(60);
+			udelay(120000);
+			spl_vibrate(60);
+#endif
+		} else
+#endif
 		if (TRUE == SD_Init()) {
 			block_dev_desc_t *sd = sd_get_dev();
 			int sd_has_uboot = spl_part_exists(sd, "uboot") ||

@@ -29,6 +29,15 @@
 #define CONFIG_SYS_64BIT_LBA
 #define CONFIG_EMMC_BOOT
 #define CONFIG_SD_BOOT
+/*
+ * TL+TR held at power-on skips the card; see spl_sd_skip_requested().
+ * DISABLED: the pad-mux/GPIO reads in spl_sd_skip_requested() hang the SPL at
+ * this stage (AON GPIO 0x32070000 is likely unclocked here). Kept off until
+ * that is solved; VOL-UP chainload in U-Boot already covers "boot stock".
+ */
+/* #define CONFIG_SD_BOOT_SKIP_KEYS */
+/* One short motor pulse when the SPL comes up (post-DDR, in emmc_boot.c). */
+#define CONFIG_SPL_BOOT_VIBRATE
 
 #define SDCARD_BOOT_SECTOR	200
 
