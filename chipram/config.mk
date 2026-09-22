@@ -158,6 +158,21 @@ endif
 
 CFLAGS += $(call cc-option,-fno-stack-protector)
 
+# GCC 14 turns several long-standing warnings into errors by default, and this
+# 2015 vendor tree relies on all of them: functions used before any declaration
+# (regulator_set_voltage, udelay, print_String, __raw_readl, timer_init,
+# sprd_get_syscnt, sprd_strcmp...), assignments between pointers and u32, and
+# so on. The code is correct as built by the toolchain it was written for, so
+# keep the diagnostics as warnings rather than rewriting headers that came from
+# the vendor. cc-option so older compilers, which reject the -Wno-error= names
+# they do not know, are unaffected.
+CFLAGS += $(call cc-option,-fpermissive)
+CFLAGS += $(call cc-option,-Wno-error=implicit-function-declaration)
+CFLAGS += $(call cc-option,-Wno-error=int-conversion)
+CFLAGS += $(call cc-option,-Wno-error=incompatible-pointer-types)
+CFLAGS += $(call cc-option,-Wno-error=return-mismatch)
+CFLAGS += $(call cc-option,-Wno-error=implicit-int)
+
 ifneq ($(AP_VERSION), )
 CFLAGS += -DCONFIG_AP_VERSION='"$(AP_VERSION)"'
 endif
