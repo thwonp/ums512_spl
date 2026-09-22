@@ -26,9 +26,10 @@
 # Environment overrides:
 #   CROSS_COMPILE   cross compiler prefix   (default: aarch64-linux-gnu-)
 #   PART_SIZE       output partition size   (default: 4194304, i.e. 4 MiB)
-#   PACKER          dhtb | imgheaderinsert  (default: imgheaderinsert)
+#   PACKER          dhtb | imgheaderinsert  (default: dhtb)
 #                   Only affects the unsigned variants. Signed always uses the
-#                   stock imgheaderinsert + sprd_sign.
+#                   stock imgheaderinsert + sprd_sign, which this branch does
+#                   not carry (no tools/); see below.
 #
 # Output: out/<variant>/spl_a_<variant>.img and a spl_b copy (both slots hold
 # the same SPL on this device).
@@ -40,7 +41,7 @@ BOARD="ums512_1h10"
 
 CROSS_COMPILE="${CROSS_COMPILE:-aarch64-linux-gnu-}"
 PART_SIZE="${PART_SIZE:-4194304}"
-PACKER="${PACKER:-imgheaderinsert}"
+PACKER="${PACKER:-dhtb}"
 
 IHI="$REPO_DIR/tools/imgheaderinsert"                 # 2 arg, unsigned DHTB packing
 IHI_SECURE="$REPO_DIR/tools/imgheaderinsert_secure"   # 3 arg secure mode, emits -sign.bin
@@ -115,6 +116,13 @@ build_variant() {
 	if [ "$variant" = "signed" ] || [ "$variant" = "signed-open" ] || [ "$variant" = "diag" ]; then
 		# Factory flow: imgheaderinsert in secure mode (arg 0 = secure, 0 = keep
 		# original), then sprd_sign with rsa2048_0 (pss), then pad.
+		# This branch of the tree ships no tools/: the vendor packer/signer
+		# binaries and the signing keys are not part of it. Take them from
+		# the upstream tree (beebono/ums512_spl) if you really need a signed
+		# build; the open and nosec variants need nothing from tools/.
+		for t in "$IHI_SECURE" "$SPRD_SIGN" "$SIGN_CONFIG/rsa2048_0.pem"; do
+			[ -e "$t" ] || { echo "error: $t missing; signed variants need the vendor tools and keys, which this tree does not carry" >&2; exit 1; }
+		done
 		cp "$payload" "$out/u-boot-spl-16k.bin"
 		( cd "$out" && "$IHI_SECURE" u-boot-spl-16k.bin 0 0 >/dev/null )
 		"$SPRD_SIGN" "$out/u-boot-spl-16k-sign.bin" "$SIGN_CONFIG" pss >/dev/null
@@ -126,6 +134,7 @@ build_variant() {
 		# open never goes through the vendor packer: that is the point of it.
 		python3 "$REPO_DIR/scripts/dhtb_pack.py" "$payload" "$img" "$PART_SIZE"
 	else
+		[ -x "$IHI" ] || { echo "error: $IHI missing; use PACKER=dhtb (no vendor tools in this tree)" >&2; exit 1; }
 		cp "$payload" "$out/spl_${variant}.bin"
 		"$IHI" "$out/spl_${variant}.bin" 1 >/dev/null   # arg 1 = nosec, add payload hash
 		pad_to_part "$out/spl_${variant}.img" "$img"

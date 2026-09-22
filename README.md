@@ -1,5 +1,12 @@
 # ums512_spl
 
+> **This branch (`armbian`) carries no `tools/`.** The vendor `imgheaderinsert` /
+> `sprd_sign` binaries and the `rsa2048_*` signing keys of the upstream tree are
+> deliberately left out: the Armbian build only needs the unsigned `open`
+> variant, which the in-tree `scripts/dhtb_pack.py` packs, and a public tree
+> should not carry a device signing key. `signed*` variants fail with a clear
+> error here; use upstream `beebono/ums512_spl` for those.
+
 Self contained tooling to build the SPL (first stage / chipram loader, also
 called fdl1) for the Unisoc ums512_1h10 (sharkl5pro) platform, and wrap it into
 a flashable `spl_a` style image.
