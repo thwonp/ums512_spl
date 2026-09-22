@@ -13,9 +13,15 @@
 #                BootROM accepts it (signature valid) AND the SPL does not verify
 #                the next stage, so it boots a patched or unsigned u-boot. Works
 #                on both fused and unfused units. This is the modding image.
+#   open         Same SPL as signed-open (CONFIG_SECBOOT on, RSA checks stubbed,
+#                secure-world bring-up as stock) but unsigned, DHTB hash only,
+#                packed with the in-tree python packer. No vendor key or vendor
+#                binary involved. Boots on an unfused unit (the BootROM checks the
+#                DHTB hash, not the signature) and, unlike nosec, keeps the
+#                stock Android boot working since the secure world is set up.
 #
 # Usage:
-#   ./build.sh [nosec|secure|signed|signed-open|all]     (default: all)
+#   ./build.sh [nosec|secure|signed|signed-open|open|all]     (default: all)
 #
 # Environment overrides:
 #   CROSS_COMPILE   cross compiler prefix   (default: aarch64-linux-gnu-)
@@ -47,9 +53,10 @@ case "$VARIANTS" in
 	secure)      VARIANTS="secure" ;;
 	signed)      VARIANTS="signed" ;;
 	signed-open) VARIANTS="signed-open" ;;
+	open)        VARIANTS="open" ;;
 	diag)        VARIANTS="diag" ;;
-	all)         VARIANTS="nosec secure signed signed-open" ;;
-	*) echo "usage: $0 [nosec|secure|signed|signed-open|all]"; exit 2 ;;
+	all)         VARIANTS="nosec secure signed signed-open open" ;;
+	*) echo "usage: $0 [nosec|secure|signed|signed-open|open|all]"; exit 2 ;;
 esac
 
 # --- sanity checks ----------------------------------------------------------
@@ -99,6 +106,7 @@ build_variant() {
 	nosec)         frag="$REPO_DIR/board/${BOARD}.nosec.config" ;;   # secboot off, unsigned
 	secure|signed) frag="$REPO_DIR/board/${BOARD}.secure.config" ;;  # secboot on, real RSA verify
 	signed-open)   frag="$REPO_DIR/board/${BOARD}.open.config" ;;    # secboot on, RSA checks stubbed
+	open)          frag="$REPO_DIR/board/${BOARD}.open.config" ;;    # same SPL, unsigned (dhtb packer)
 	diag)          frag="$REPO_DIR/board/${BOARD}.diag.config" ;;    # diagnostic: skip SML, jump uboot direct
 	esac
 
@@ -114,7 +122,8 @@ build_variant() {
 		# fields are outside the signed region, so the signature stays valid.
 		python3 "$REPO_DIR/scripts/stock_frame.py" "$out/u-boot-spl-16k-sign.bin"
 		pad_to_part "$out/u-boot-spl-16k-sign.bin" "$img"
-	elif [ "$PACKER" = "dhtb" ]; then
+	elif [ "$PACKER" = "dhtb" ] || [ "$variant" = "open" ]; then
+		# open never goes through the vendor packer: that is the point of it.
 		python3 "$REPO_DIR/scripts/dhtb_pack.py" "$payload" "$img" "$PART_SIZE"
 	else
 		cp "$payload" "$out/spl_${variant}.bin"
