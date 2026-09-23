@@ -1,57 +1,147 @@
-# ums512_spl
+# ums512_spl — Unisoc sharkl5pro (ums512_1h10) first-stage loader
 
-> **This branch (`armbian`) carries no `tools/`.** The vendor `imgheaderinsert` /
-> `sprd_sign` binaries and the `rsa2048_*` signing keys of the upstream tree are
-> deliberately left out: the Armbian build only needs the unsigned `open`
-> variant, which the in-tree `scripts/dhtb_pack.py` packs, and a public tree
-> should not carry a device signing key. `signed*` variants fail with a clear
-> error here; use upstream `beebono/ums512_spl` for those.
-
-Self contained tooling to build the SPL (first stage / chipram loader, also
-called fdl1) for the Unisoc ums512_1h10 (sharkl5pro) platform, and wrap it into
-a flashable `spl_a` style image.
+Builds the SPL (first stage / chipram loader, also called fdl1) for the Unisoc
+ums512_1h10 (sharkl5pro / T618) platform from source and wraps it into a
+flashable `spl_a` style image: a 512 byte DHTB header, the SPL payload, padded
+with zeros to 4 MiB. The two slots `spl_a` and `spl_b` hold identical SPLs, so
+the build writes both.
 
 The device this targets is the Anbernic style ums512_1h10 board used by the
-GammaOS / rotate builds. The output image matches the layout of the stock
-`spl_a.img`: a 512 byte DHTB header, the SPL payload, padded with zeros to
-4 MiB. The two slots `spl_a` and `spl_b` hold identical SPLs, so the build
-writes both.
+GammaOS / rotate builds — in practice the Anbernic RG Rotate.
 
-Everything needed to build is in this repo. The only external dependency is an
-aarch64 cross compiler, installed by `scripts/setup-toolchain.sh`.
+## Provenance
 
-## Recommended path: binary-patch the stock SPL
+```
+TheGammaSqueeze/ums512_spl      original self-contained build tree
+  └── beebono/ums512_spl        rotate fixes (efuse/seg7, SD-boot hardening)
+        └── crackerjacques/ums512_spl   this fork, branch `armbian`
+```
 
-The from-source build below is faithful and educational, but the **reliable**
-way to get a working "open" SPL on this device is to binary-patch the stock
-`spl_a.img`, because:
+- **[TheGammaSqueeze/ums512_spl](https://github.com/TheGammaSqueeze/ums512_spl)**
+  is the upstream: it vendored Unisoc's `chipram` bootloader, reimplemented the
+  A/B slot selection from the stock binary, and added the SD-card boot path.
+- **[beebono/ums512_spl](https://github.com/beebono/ums512_spl)** (Noxwell)
+  contributed the efuse/SEG7 firewall fixes and the SD-boot hangs, merged
+  upstream as PR #6.
+- This fork adds the unsigned **`open`** variant, drops `tools/`, and keeps the
+  2015-era vendor C building under GCC 14. Nothing else is changed.
 
-- **This device does not validate the SPL's RSA signature.** Proven: the
-  on-device working `spl_a_patched.img` carries the *stale* signature copied
-  verbatim from stock (identical signature bytes) over *different* code, with
-  only the DHTB payload hash recomputed, and it boots. The BootROM checks the
-  DHTB hash, not the RSA signature. So no valid signature is needed.
-- The stock SPL already does everything correctly (DDR init, the secure-DDR
-  firewall, A/B slot selection from misc). The only change needed to run a
-  patched or self-built u-boot is to disable the four RSA image checks
-  (teecfg / sml / trustos / uboot) it performs before jumping.
+The full history of all three is preserved in this repository; `git log` gives
+the per-commit authorship.
 
-`scripts/patch_stock_spl.py` does exactly that: it finds the four
-`bl secboot_verify ; cbz w0 ; mov w0,#5 ; bl error` sequences (by the invariant
-`cbz w0 ; mov w0,#5` pair), NOPs them, and recomputes the DHTB and SIMGHDR
-hashes. Its output is **byte-for-byte identical** to the known-good on-device
-`spl_a_patched.img`.
+## License
+
+The vendored `chipram/` tree is Unisoc's chipram bootloader, which is derived
+from **U-Boot** and carries U-Boot's terms: `SPDX-License-Identifier: GPL-2.0+`
+on the files that have an SPDX tag, and the "either version 2 ... or (at your
+option) any later version" boilerplate on the rest. So the tree as a whole is
+**GPL-2.0-or-later**, and the changes in this fork are offered under the same
+terms.
+
+`COPYING` is the GNU General Public License version 2, verbatim from U-Boot's
+`Licenses/gpl-2.0.txt`. Individual files keep whatever notice they already
+carry; where a file says otherwise, that file's own notice wins.
+
+## What the `armbian` branch is
+
+This branch carries **no `tools/`**. The upstream tree vendors Unisoc's
+`imgheaderinsert` / `sprd_sign` binaries and the `rsa2048_*` signing keys; a
+public tree that a distribution builds from should not carry a device signing
+key, and it does not need to:
+
+- Armbian builds only the **`open`** variant, which is unsigned and packed by
+  the in-tree `scripts/dhtb_pack.py`.
+- The `signed`, `signed-open` and `secure`-with-signing paths therefore fail
+  here with a clear error. Use upstream
+  [beebono/ums512_spl](https://github.com/beebono/ums512_spl) if you need them.
+
+This is the branch the Armbian build framework pins and builds; see
+`config/sources/families/sprd-ums512.conf` in
+[armbian/build](https://github.com/armbian/build).
+
+## Build
 
 ```sh
-# you provide the stock spl_a.img pulled from the device or PAC
+# one time, on Debian or Ubuntu
+./scripts/setup-toolchain.sh
+
+# the variant Armbian ships
+./build.sh open
+
+# or every variant this branch can build
+./build.sh            # == nosec secure open
+```
+
+Results:
+
+```
+out/open/spl_a_open.img       out/open/spl_b_open.img
+out/nosec/spl_a_nosec.img     out/nosec/spl_b_nosec.img
+out/secure/spl_a_secure.img   out/secure/spl_b_secure.img
+```
+
+Flash the variant you want to the `spl_a` and `spl_b` partitions in the eMMC
+boot area. The only external dependency is an aarch64 cross compiler.
+
+### Variants
+
+| variant | `CONFIG_SECBOOT` | RSA image checks | SPL signed | boots Linux | boots stock Android | in this branch |
+| ------- | ---------------- | ---------------- | ---------- | ----------- | ------------------- | -------------- |
+| `open`        | on  | **stubbed** | no  | yes | **yes** | **yes — this is the one to use** |
+| `nosec`       | off | n/a         | no  | yes | no (secure world never comes up) | yes, reference only |
+| `secure`      | on  | enforced    | no  | only stock-signed images | yes | yes, for inspection |
+| `signed`      | on  | enforced    | yes | only stock-signed images | yes | no (needs `tools/`) |
+| `signed-open` | on  | stubbed     | yes | yes | yes | no (needs `tools/`) |
+
+**`open` is the variant to use, and the one Armbian ships.** It is the same SPL
+as `signed-open` — `CONFIG_SECBOOT` on, so the secure-DDR firewall and the
+secure-world bring-up happen exactly as in stock, with the four RSA image checks
+(teecfg / sml / trustos / uboot) stubbed so a self-built U-Boot boots — but it is
+**unsigned**, and packed by `scripts/dhtb_pack.py` instead of the vendor tooling.
+
+It is accepted because **this device's BootROM checks the DHTB payload hash, not
+the RSA signature**. That was established on hardware: the known-good
+`spl_a_patched.img` carries the *stale* signature copied verbatim from stock over
+*different* code, with only the DHTB hash recomputed, and it boots. Verified on
+an Anbernic RG Rotate: Linux boots from the SD card, and with the card out the
+stock Android on eMMC still boots. `nosec` does **not** manage the latter — it
+skips the secure-world bring-up, so Android loops.
+
+If your unit *is* secure-boot fused, the BootROM will reject an unsigned SPL and
+you need `signed-open` from upstream. Know your unit's fuse state before
+flashing. Recovery from a bad SPL is normally still possible through the Unisoc
+BootROM download mode.
+
+Two independent things, to keep them straight:
+
+- **Signing the SPL image** (the SIMGHDR + RSA block) decides whether the
+  **BootROM accepts the SPL**. Only matters on a fused unit. Key `rsa2048_0`.
+- **`CONFIG_SECBOOT`** turns on the SPL's own secure-world bring-up: the
+  `sprd_firewall_config_pre` secure-DDR firewall setup (`sml_teecfg_sec`,
+  `dmc_sec`, ...) that the SML/trustos secure world needs, plus the RSA checks of
+  the images it loads. The stock SPL is a `CONFIG_SECBOOT` build. A build with it
+  **off** skips the firewall setup and the SML handoff hangs, which is why
+  `nosec` does not complete a stock boot.
+
+## Alternative: binary-patch the stock SPL
+
+If you only need stock behaviour with a patched U-Boot — no SD-card boot — you
+can patch the stock image instead of building one. `scripts/patch_stock_spl.py`
+finds the four `bl secboot_verify ; cbz w0 ; mov w0,#5 ; bl error` sequences (by
+the invariant `cbz w0 ; mov w0,#5` pair), NOPs them, and recomputes the DHTB and
+SIMGHDR hashes. Its output is **byte-for-byte identical** to the known-good
+on-device `spl_a_patched.img`.
+
+```sh
+# you provide the stock spl_a.img pulled from the device or a PAC
 python3 scripts/patch_stock_spl.py stock_spl_a.img spl_open.img
 # flash spl_open.img to both spl_a and spl_b
 ```
 
-This is the simplest image to flash if you only need stock behaviour with a
-patched u-boot. The from-source `signed-open` build below is confirmed booting on
-real hardware and is the one to use for the features this tree adds on top of
-stock, in particular SD-card boot (see "SD-card boot").
+The stock SPL already does everything correctly (DDR init, the secure-DDR
+firewall, A/B slot selection from misc); the only change needed to run a patched
+or self-built U-Boot is to disable the four RSA image checks. What this path does
+**not** give you is SD-card boot — that is added by the from-source build.
 
 ## Layout
 
@@ -60,114 +150,17 @@ chipram/        Vendored Unisoc chipram bootloader source (the SPL lives in
                 chipram/nand_spl, sharkl5pro board code under
                 chipram/nand_spl/board/spreadtrum/sharkl5pro).
 board/          Board config fragments appended to the generated config.h,
-                one per build variant: nosec, secure, open (used by the
-                signed-open modding image), diag (open + on-device diagnostics).
-                See "Where the config comes from" below.
-tools/          imgheaderinsert, the stock Unisoc DHTB header tool (i386 ELF),
-                plus imgheaderinsert_secure, sprd_sign and the signing keys.
-scripts/        setup-toolchain.sh, dhtb_pack.py (portable packer),
-                stock_frame.py, patch_stock_spl.py.
+                one per build variant: nosec, secure, open, diag (open plus
+                on-device diagnostics). See "Where the config comes from".
+scripts/        setup-toolchain.sh, dhtb_pack.py (portable DHTB packer),
+                stock_frame.py, patch_stock_spl.py, parse_spl_trace.py.
 build.sh        Top level build driver.
+COPYING         GPL-2.0.
 ```
 
-## Build
-
-```sh
-# one time, on Debian or Ubuntu
-./scripts/setup-toolchain.sh
-
-# build all four variants (default)
-./build.sh
-
-# or a single variant
-./build.sh nosec
-./build.sh secure
-./build.sh signed
-./build.sh signed-open
-```
-
-Results:
-
-```
-out/nosec/spl_a_nosec.img               out/nosec/spl_b_nosec.img
-out/secure/spl_a_secure.img             out/secure/spl_b_secure.img
-out/signed/spl_a_signed.img             out/signed/spl_b_signed.img
-out/signed-open/spl_a_signed-open.img   out/signed-open/spl_b_signed-open.img
-```
-
-Flash the variant you want to the `spl_a` and `spl_b` partitions (for example
-with fastboot, or by placing it in a PAC). For this device the practical choice
-is **`signed-open`**: it is signed with the matching key so a fused unit's
-BootROM accepts it, and it does the full secure-world bring-up like stock while
-stubbing the RSA image checks so a patched or self-built u-boot boots. This is
-the from-source image confirmed booting on real hardware, and the one that
-carries the SD-card boot support. Use `nosec` only on a non-fused unit for
-reference, and `secure` only on a fused unit where the downstream images are
-signed with the matching key, otherwise the SPL will reject them.
-
-### variants
-
-| variant | CONFIG_SECBOOT | RSA image checks | signed | use |
-| ------- | -------------- | ---------------- | ------ | --- |
-| nosec       | off | n/a          | no  | Reference only. No secure-DDR firewall, will not complete boot on this secure device. |
-| secure      | on  | enforced     | no  | Inspection / self-sign. Full secure boot, verifies sml/trustos/teecfg/uboot. |
-| signed      | on  | enforced     | yes | Stock equivalent. Firewall + verify; boots only stock (correctly signed) images. |
-| signed-open | on  | **stubbed**  | yes | **The modding image.** Full secure-DDR firewall and secure-world bring-up like stock, but the four RSA image checks are stubbed so a patched or self-built u-boot boots. |
-
-Two independent things:
-
-- **Signing the SPL image** (the SIMGHDR + RSA block) decides whether the
-  **BootROM accepts the SPL**. Only matters on a fused unit. `rsa2048_0`.
-- **`CONFIG_SECBOOT`** turns on the SPL's own secure-world bring-up: the
-  `sprd_firewall_config_pre` secure-DDR firewall setup (`sml_teecfg_sec`,
-  `dmc_sec`, ...) that the SML/trustos secure world needs, plus the RSA checks of
-  the images it loads. The stock SPL is a `CONFIG_SECBOOT` build, so it does this
-  firewall setup. A build with secure boot **off** (the old `nosec`/`signed-open`)
-  skips it and the SML handoff hangs, which is why those did not boot.
-
-`signed-open` therefore keeps `CONFIG_SECBOOT` **on** (so the firewall/secure
-world is set up exactly like stock) but defines `CONFIG_SPL_SKIP_IMG_VERIFY`,
-which stubs `secboot_verify()` to always succeed. That skips the four RSA image
-checks (sml/trustos/teecfg/uboot) while everything else matches stock, so a
-patched u-boot boots.
-
-### Signing (signed variant)
-
-The `signed` variant reproduces the factory signing chain using the stock tools
-vendored under `tools/`:
-
-1. build the SPL with the secure config,
-2. `tools/imgheaderinsert_secure u-boot-spl-16k.bin 0 0` adds the DHTB header in
-   secure mode and produces `u-boot-spl-16k-sign.bin`,
-3. `tools/sprd_sign u-boot-spl-16k-sign.bin tools/sign-config pss` appends the
-   RSA-2048 signature using the key **rsa2048_0**,
-4. pad to 4 MiB.
-
-The signing key is `tools/sign-config/rsa2048_0.pem`. It is the same key the
-stock `spl_a.img` was signed with: the modulus embedded in the stock signature
-matches `rsa2048_0` exactly. The keys here are Unisoc BSP reference keys,
-included at the repository owner's request so the build is self contained.
-
-`tools/sprd_sign` and `tools/imgheaderinsert_secure` load `libc++.so` from
-`tools/lib64` via their RUNPATH, so no system libc++ is needed.
-
-**Framing.** The vendored `sprd_sign` (2020 BSP) produces a valid rsa2048_0
-signature but leaves the DHTB header and SIMGHDR block magic incomplete compared
-with the newer factory tool. `scripts/stock_frame.py` stamps the missing fields
-so the container matches the stock image byte for byte in structure:
-
-  - DHTB 0x08: SHA256 over the code (download integrity hash)
-  - DHTB 0x28: the `cccccccc aaaaaaaa` marker words
-  - DHTB 0x3c: code size, DHTB 0x40: code size + 0x494
-  - the `SIMGHDR` magic at the start of the signature block
-
-These fields were derived from the stock `spl_a.img` and cross checked against
-`uboot_a.img` (the 0x40 = size + 0x494 relation holds for both). They all sit
-outside the signed region: the RSA signature and the SIMGHDR stored hash cover
-only the code, and the block sits after it, so stamping them does not touch the
-signature. After framing, the only header bytes that differ from the stock image
-are the SHA and the size fields, which must differ because the freshly compiled
-code differs in size and content.
+(Upstream additionally has `tools/` with the vendor `imgheaderinsert`,
+`imgheaderinsert_secure`, `sprd_sign` and the signing keys. This branch does
+not — see "What the `armbian` branch is" above.)
 
 ## Where the config comes from
 
@@ -181,13 +174,13 @@ matching `#define` lines to `out/include/config.h`.
 
 This repo reproduces that step. The resolved values for ums512_1h10
 (BOARD_TEE_CONFIG=trusty, non feature phone, not low mem) are captured in
-`board/ums512_1h10.nosec.config` and `board/ums512_1h10.secure.config`, and
-`build.sh` appends the chosen one right after `make ums512_1h10_config`, exactly
-as the BSP does.
+`board/ums512_1h10.nosec.config`, `board/ums512_1h10.secure.config` and
+`board/ums512_1h10.open.config`, and `build.sh` appends the chosen one right
+after `make ums512_1h10_config`, exactly as the BSP does.
 
 ## DHTB image format
 
-`imgheaderinsert <payload> 1` prepends a 512 byte header:
+The 512 byte header prepended to the payload:
 
 ```
 0x000  "DHTB"                      magic
@@ -197,9 +190,9 @@ as the BSP does.
 ```
 
 The header is followed by the raw payload, then the whole thing is padded with
-zeros to the 4 MiB partition size. `scripts/dhtb_pack.py` reproduces this in
-pure Python for hosts without 32 bit multilib. Select it with
-`PACKER=dhtb ./build.sh`.
+zeros to the 4 MiB partition size. `scripts/dhtb_pack.py` produces this in pure
+Python, with no 32 bit multilib and no vendor binary; it is the default
+(`PACKER=dhtb`) and the only packer available on this branch.
 
 ## A/B slot support (reimplemented from the stock binary)
 
@@ -207,8 +200,8 @@ The vendored chipram source predates this device's Android A/B conversion: its
 `nand_boot()` loaded non-slotted partitions (`uboot`, `sml`, `trustos`), which do
 not exist on this device (the real partitions are `uboot_a`/`uboot_b`,
 `sml_a`/`sml_b`, `trustos_a`/`trustos_b`, `teecfg_a`/`teecfg_b`). That is why an
-otherwise-correct build did not boot. The stock SPL was fully disassembled and
-the missing behaviour reimplemented in `chipram/nand_spl/emmc_boot.c` to match it:
+otherwise-correct build did not boot. The stock SPL was disassembled and the
+missing behaviour reimplemented in `chipram/nand_spl/emmc_boot.c` to match it:
 
 - **Slot selection** (`spl_select_slot`): reads the `misc` partition and parses
   the Android `bootloader_control` block at offset 0x800 (magic `0x42414342`),
@@ -220,12 +213,12 @@ the missing behaviour reimplemented in `chipram/nand_spl/emmc_boot.c` to match i
   last).
 - **Load addresses** taken from the stock binary: SML `0x94000000`, TRUSTOS
   `0x94060000` (the vendored config had the wrong `0x94020000`), TEECFG
-  `0x94040000`, u-boot `0x9f000000`.
+  `0x94040000`, U-Boot `0x9f000000`.
 - **SML handoff ABI**: enters SML at `0x94000000` with `x0` = trustos base
   (`0x94060000`) and `x1` = teecfg base (`0x94040000`), exactly like stock.
 - **Dual-backup removed** (`#undef CONFIG_DUAL_BACKUP`): stock has no `*_bak`
-  partitions, and the old path ran an `sprd_hash_check` on u-boot that would have
-  rejected a patched u-boot. The remaining secure-path fallbacks now target the
+  partitions, and the old path ran an `sprd_hash_check` on U-Boot that would have
+  rejected a patched U-Boot. The remaining secure-path fallbacks now target the
   other A/B slot instead of `*_bak`.
 
 If `misc`/BCB is unreadable the selector falls back to the BCB's advisory suffix,
@@ -239,22 +232,22 @@ Not reimplemented (deliberate, not boot-blocking): the Virtual-A/B
 
 ## SD-card boot
 
-The SPL can boot u-boot from an external microSD card instead of eMMC. On every
+The SPL can boot U-Boot from an external microSD card instead of eMMC. On every
 boot it loads the secure images (teecfg/sml/trustos) from eMMC as usual, then
-tries the SD card for u-boot first, and only if no valid image is found there
+tries the SD card for U-Boot first, and only if no valid image is found there
 does it fall back to the eMMC `uboot_<slot>` partition. This is gated by
 `CONFIG_SD_BOOT` (defined in `chipram/include/configs/ums512_1h10.h`, on for this
 board) and implemented in `spl_load_uboot_from_sd()` in
 `chipram/nand_spl/emmc_boot.c`.
 
-**Placing u-boot on the card.** Write a plain DHTB-wrapped u-boot to the raw
+**Placing U-Boot on the card.** Write a plain DHTB-wrapped U-Boot to the raw
 card starting at **sector 200** (byte offset `0x19000`):
 
 - sector 200: the 512 byte DHTB header (`"DHTB"` magic `0x42544844` at offset 0,
   payload length at offset `0x30`),
-- sector 201 onward: the raw u-boot payload.
+- sector 201 onward: the raw U-Boot payload.
 
-The image on the card is **not** signature/cert checked: a DHTB-wrapped u-boot
+The image on the card is **not** signature/cert checked: a DHTB-wrapped U-Boot
 whose magic is present is treated as valid and loaded (exactly `mImgSize` bytes,
 no trailing cert), so it must be under `CONFIG_UBOOT_MAX_SIZE` (1 MiB). A card
 with no valid DHTB image at sector 200 simply falls through to eMMC, so an
@@ -263,7 +256,7 @@ inserted data card does not break booting.
 **Why the SPL does the full SD bring-up.** The SPL itself is loaded from eMMC, so
 the BootROM only ever initializes the eMMC controller; the SD controller (SDIO0
 at `0x71100000`) and the slot are completely cold. The SD path therefore performs
-all of the controller and slot bring-up that the kernel/u-boot pinctrl would
+all of the controller and slot bring-up that the kernel/U-Boot pinctrl would
 normally do later:
 
 - **card power**: enable the sc2730 `vddsdcore`/`vddsdio` LDOs. The power
@@ -282,10 +275,9 @@ normally do later:
 
 This bring-up lives in `SD_HOST_Register()` and `SD_Set_init_clk()` in
 `chipram/nand_spl/mmc_v40.c`, guarded by `CONFIG_SOC_SHARKL5PRO` /
-`CONFIG_ADIE_SC2730`. Validated on hardware: it boots u-boot straight from the
+`CONFIG_ADIE_SC2730`. Validated on hardware: it boots U-Boot straight from the
 card, and eMMC boot still works when no card image is present. The binary-patch
-path (above) is the stock SPL and does not include SD boot; use the from-source
-`signed-open` build for it.
+path above is the stock SPL and does not include SD boot.
 
 ## Secure-world handoff (survives an Android shutdown)
 
@@ -314,23 +306,11 @@ The stock `spl_a.img` from this device was examined byte for byte. Findings:
 
 2. The signing key is **rsa2048_0**. The modulus embedded in the stock
    signature block matches `rsa2048_0_pub.pem` in the Unisoc BSP
-   (`bsp_build-master/packimage_scripts/config/`) exactly. The private key
-   `rsa2048_0.pem` and the signing tool `sprd_sign` are present in that tree,
-   so a matching signed image can be produced.
+   (`bsp_build-master/packimage_scripts/config/`) exactly.
 
-3. **What this means for flashing.** If the target unit has secure boot fused
-   in efuse (which is the normal state for a device shipping a signed SPL), the
-   BootROM verifies the SPL signature. In that case an **unsigned** image from
-   this repo (either variant) will be rejected and will not boot from the spl
-   partition. If the unit is **not** fused, the BootROM ignores the signature
-   and the unsigned image boots. You must know your unit's fuse state before
-   flashing. Recovery from a bad spl is normally still possible through the
-   Unisoc BootROM download mode.
-
-4. To make a fully compatible image on a fused unit, the SPL payload is signed
-   with rsa2048_0 using `sprd_sign` (the same step the factory packimage.sh
-   runs). This is wired into `build.sh` as the `signed` variant. See "Signing"
-   below, including the one known framing difference from the stock image.
+3. **What this means for flashing.** See the fuse discussion under "Variants"
+   above. In short: this device does not enforce the SPL signature, which is why
+   the unsigned `open` image boots; a fused unit would need a signed one.
 
 ### DDR timing and device tree
 
@@ -347,23 +327,27 @@ DCDC_MEM = 1100
 
 Because size and type auto detect are enabled, the SPL probes the DRAM at boot
 rather than hard coding a single part, which makes it tolerant of DRAM
-variations. These values are used exactly as they appear in the vendored
-source, so the DDR behaviour matches this source tree. The one thing this repo
-cannot guarantee is that the vendored chipram snapshot is the identical
-revision Unisoc used to build the stock image; the payload size differs (mostly
-due to the gcc 4.9 vs gcc 11 toolchain), but the DDR init path, load addresses
-and boot flow are the same.
+variations. These values are used exactly as they appear in the vendored source.
+The one thing this repo cannot guarantee is that the vendored chipram snapshot is
+the identical revision Unisoc used to build the stock image; the payload size
+differs (mostly due to the gcc 4.9 vs modern toolchain), but the DDR init path,
+load addresses and boot flow are the same.
 
 ## Notes on reproducibility
 
 The image is not byte for byte identical to a stock `spl_a.img` built by Unisoc,
 because that was compiled with a different (gcc 4.9 Android) toolchain. The
-format, load flow, DDR init and boot behaviour are the same. The build here was
-verified with gcc-aarch64-linux-gnu 11.4.
+format, load flow, DDR init and boot behaviour are the same. The build is
+verified with gcc-aarch64-linux-gnu 11 and 14.
 
 ### Local changes to the vendored source
 
-`chipram/include/linux/compiler-gcc.h` was patched so that modern gcc (5 and
-newer) uses the existing `compiler-gcc4.h` attribute definitions instead of
-trying to include a per version header that does not ship in this tree. This is
-the only source change; it does not affect generated code.
+- `chipram/include/linux/compiler-gcc.h` was patched so that modern gcc (5 and
+  newer) uses the existing `compiler-gcc4.h` attribute definitions instead of
+  trying to include a per version header that does not ship in this tree. This
+  does not affect generated code.
+- `chipram/config.mk` keeps GCC 14's stricter C diagnostics as warnings
+  (`-fpermissive`, `-Wno-error=implicit-function-declaration` and friends, all
+  behind `cc-option`). GCC 14 turns several long-standing warnings into errors by
+  default and this 2015 vendor tree relies on all of them; the alternative is
+  rewriting headers that came from the vendor.
