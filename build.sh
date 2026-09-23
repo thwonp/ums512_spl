@@ -21,7 +21,9 @@
 #                stock Android boot working since the secure world is set up.
 #
 # Usage:
-#   ./build.sh [nosec|secure|signed|signed-open|open|all]     (default: all)
+#   ./build.sh [nosec|secure|signed|signed-open|open|all]
+#                   (default: all == nosec secure open; the signed variants need
+#                    tools/, which this branch does not carry)
 #
 # Environment overrides:
 #   CROSS_COMPILE   cross compiler prefix   (default: aarch64-linux-gnu-)
@@ -56,7 +58,10 @@ case "$VARIANTS" in
 	signed-open) VARIANTS="signed-open" ;;
 	open)        VARIANTS="open" ;;
 	diag)        VARIANTS="diag" ;;
-	all)         VARIANTS="nosec secure signed signed-open open" ;;
+	# This branch carries no tools/, so the signed variants cannot be built here;
+	# leave them out of "all" so a bare ./build.sh succeeds. Ask for them by name
+	# to get the explicit "needs the vendor tools and keys" error.
+	all)         VARIANTS="nosec secure open" ;;
 	*) echo "usage: $0 [nosec|secure|signed|signed-open|open|all]"; exit 2 ;;
 esac
 
