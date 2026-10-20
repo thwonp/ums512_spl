@@ -420,7 +420,9 @@ void sprd_firewall_config_pre (void)
 
 #ifdef CONFIG_SECBOOT
 	sce_sec();
+#ifndef CONFIG_SPL_CM4_NS_RESET
 	cm4_sec();
+#endif
 	cp_sec();
 
 	dmc_sec();
